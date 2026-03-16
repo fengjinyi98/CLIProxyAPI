@@ -318,6 +318,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/codex-cleaner.html", s.serveStaticFile("codex-cleaner.html"))
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -680,7 +681,174 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	c.File(filePath)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	// Inject floating action buttons for management helper actions.
+	injection := `<script>(function(){` +
+		`function addCleanerButton(){` +
+		`var b=document.createElement('a');` +
+		`b.href='/codex-cleaner.html';` +
+		`b.target='_blank';` +
+		`b.innerHTML='&#x1f9f9; Codex Cleaner';` +
+		`b.style.cssText='position:fixed;bottom:20px;right:20px;z-index:99999;` +
+		`background:#6366f1;color:#fff;padding:10px 18px;border-radius:8px;` +
+		`font-size:14px;font-weight:600;text-decoration:none;box-shadow:0 4px 12px rgba(99,102,241,.4);` +
+		`transition:all .2s;cursor:pointer;font-family:system-ui,sans-serif';` +
+		`b.onmouseenter=function(){b.style.background='#818cf8';b.style.transform='translateY(-2px)'};` +
+		`b.onmouseleave=function(){b.style.background='#6366f1';b.style.transform='none'};` +
+		`document.body.appendChild(b);` +
+		`return b;` +
+		`}` +
+		`function findKeyInStorage(storage){` +
+		`if(!storage){return ""}` +
+		`try{` +
+		`for(var i=0;i<storage.length;i++){` +
+		`var k=storage.key(i);` +
+		`if(!k){continue}` +
+		`var v=storage.getItem(k);` +
+		`if(!v){continue}` +
+		`var kl=k.toLowerCase();` +
+		`if(kl.indexOf("management")!==-1&&kl.indexOf("key")!==-1){return v}` +
+		`if(v.indexOf("managementKey")!==-1){` +
+		`try{var obj=JSON.parse(v);if(obj&&typeof obj.managementKey==="string"&&obj.managementKey.trim()){return obj.managementKey.trim()}}catch(_e){}` +
+		`}` +
+		`}` +
+		`}catch(_e){}` +
+		`return ""` +
+		`}` +
+		`var cachedManagementKey="";` +
+		`function resolveManagementKey(){` +
+		`if(cachedManagementKey){return cachedManagementKey}` +
+		`var override="";` +
+		`try{override=sessionStorage.getItem("cpa_mgmt_key_override")||localStorage.getItem("cpa_mgmt_key_override")||""}catch(_e){}` +
+		`if(override&&override.trim()){cachedManagementKey=override.trim();return cachedManagementKey}` +
+		`try{` +
+		`var cleanerKey=localStorage.getItem("cpa-mgmt-key")||sessionStorage.getItem("cpa-mgmt-key")||"";` +
+		`if(cleanerKey&&cleanerKey.trim()){cachedManagementKey=cleanerKey.trim();return cachedManagementKey}` +
+		`}catch(_e){}` +
+		`var key=findKeyInStorage(localStorage)||findKeyInStorage(sessionStorage)||"";` +
+		`if(key&&key.trim()){cachedManagementKey=key.trim();return cachedManagementKey}` +
+		`return ""` +
+		`}` +
+		`function promptManagementKey(){` +
+		`var key=window.prompt("请输入管理密钥");` +
+		`if(key&&key.trim()){` +
+		`cachedManagementKey=key.trim();` +
+		`try{sessionStorage.setItem("cpa_mgmt_key_override",cachedManagementKey)}catch(_e){}` +
+		`return cachedManagementKey;` +
+		`}` +
+		`return ""` +
+		`}` +
+		`async function fetchWithKey(url,options){` +
+		`var opts=options||{};` +
+		`opts.headers=opts.headers||{};` +
+		`var key=resolveManagementKey();` +
+		`if(key&&!opts.headers.Authorization&&!opts.headers["X-Management-Key"]){` +
+		`opts.headers.Authorization="Bearer "+key;` +
+		`}` +
+		`return fetch(url,opts);` +
+		`}` +
+		`function isTeamAuth(file){` +
+		`if(!file){return false}` +
+		`var fields=[file.name,file.label,file.account_type,file.account,file.email,file.provider,file.type];` +
+		`for(var i=0;i<fields.length;i++){` +
+		`var v=fields[i];` +
+		`if(typeof v==="string"&&v.toLowerCase().indexOf("team")!==-1){return true}` +
+		`}` +
+		`return false` +
+		`}` +
+		`function addDisableNonTeamButton(){` +
+		`var b=document.createElement('button');` +
+		`b.type='button';` +
+		`b.textContent='一键禁用除 team 以外的认证文件';` +
+		`b.style.cssText='position:fixed;bottom:68px;right:20px;z-index:99999;` +
+		`background:#ef4444;color:#fff;padding:10px 16px;border-radius:8px;` +
+		`font-size:13px;font-weight:600;border:none;box-shadow:0 4px 12px rgba(239,68,68,.35);` +
+		`transition:all .2s;cursor:pointer;font-family:system-ui,sans-serif';` +
+		`b.onmouseenter=function(){if(!b.disabled){b.style.background='#f87171';b.style.transform='translateY(-2px)'}};` +
+		`b.onmouseleave=function(){b.style.background='#ef4444';b.style.transform='none'};` +
+		`b.onclick=async function(){` +
+		`if(b.disabled){return}` +
+		`if(!window.confirm('确认要禁用除 team 以外的认证文件吗？')){return}` +
+		`var originalText=b.textContent;` +
+		`b.disabled=true;` +
+		`b.textContent='正在禁用...';` +
+		`try{` +
+		`var resp=await fetchWithKey('/v0/management/auth-files');` +
+		`if(resp.status===401){` +
+		`var inputKey=promptManagementKey();` +
+		`if(inputKey){resp=await fetchWithKey('/v0/management/auth-files')}` +
+		`}` +
+		`if(!resp.ok){throw new Error('获取认证文件失败('+resp.status+')')}` +
+		`var data=await resp.json();` +
+		`var files=Array.isArray(data&&data.files)?data.files:[];` +
+		`var targets=[];` +
+		`for(var i=0;i<files.length;i++){` +
+		`var f=files[i];` +
+		`if(!isTeamAuth(f)){targets.push(f)}` +
+		`}` +
+		`if(targets.length===0){alert('没有可禁用的认证文件');return}` +
+		`var ok=0,failed=0,skipped=0;` +
+		`for(var j=0;j<targets.length;j++){` +
+		`var t=targets[j]||{};` +
+		`if(t.disabled===true){skipped++;continue}` +
+		`var name=t.name||t.id||'';` +
+		`if(!name){skipped++;continue}` +
+		`var r=await fetchWithKey('/v0/management/auth-files/status',{` +
+		`method:'PATCH',` +
+		`headers:{'Content-Type':'application/json'},` +
+		`body:JSON.stringify({name:name,disabled:true})` +
+		`});` +
+		`if(r.ok){ok++}else{failed++}` +
+		`}` +
+		`alert('禁用完成。成功 '+ok+'，失败 '+failed+'，跳过 '+skipped+'。');` +
+		`if(ok>0){setTimeout(function(){window.location.reload()},300)}` +
+		`}catch(err){` +
+		`var msg=err&&err.message?err.message:String(err);` +
+		`alert('禁用失败：'+msg);` +
+		`}finally{` +
+		`b.disabled=false;` +
+		`b.textContent=originalText;` +
+		`}` +
+		`};` +
+		`document.body.appendChild(b);` +
+		`return b;` +
+		`}` +
+		`addCleanerButton();` +
+		`var bulkBtn=addDisableNonTeamButton();` +
+		`function isAuthFilesRoute(){` +
+		`return typeof window!=='undefined'&&window.location&&window.location.hash&&window.location.hash.indexOf('/auth-files')!==-1;` +
+		`}` +
+		`function updateVisibility(){` +
+		`bulkBtn.style.display=isAuthFilesRoute()?'inline-flex':'none';` +
+		`}` +
+		`window.addEventListener('hashchange',updateVisibility);` +
+		`window.addEventListener('popstate',updateVisibility);` +
+		`updateVisibility();` +
+		`})()</script>`
+
+	html := strings.Replace(string(data), "</body>", injection+"</body>", 1)
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+}
+
+func (s *Server) serveStaticFile(name string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		dir := managementasset.StaticDir(s.configFilePath)
+		if dir == "" {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		fp := filepath.Join(dir, name)
+		if _, err := os.Stat(fp); err != nil {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		c.File(fp)
+	}
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {

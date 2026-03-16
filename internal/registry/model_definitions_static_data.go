@@ -835,7 +835,7 @@ func GetOpenAIModels() []*ModelInfo {
 			Type:                "openai",
 			Version:             "gpt-5.4-2026-03-05",
 			DisplayName:         "GPT 5.4",
-			Description:         "Latest flagship frontier model with integrated Codex capabilities for professional coding, reasoning, and agentic tasks.",
+			Description:         "Stable version of GPT 5.4",
 			ContextLength:       1050000,
 			MaxCompletionTokens: 128000,
 			SupportedParameters: []string{"tools"},
