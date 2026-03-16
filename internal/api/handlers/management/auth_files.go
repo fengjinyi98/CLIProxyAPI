@@ -28,6 +28,7 @@ import (
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kimi"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/qwen"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -239,14 +240,21 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "handler not initialized"})
 		return
 	}
+	groupFilter := normalizedAuthGroupFilter(c.Query("group"))
+	if groupFilter == "" {
+		groupFilter = normalizedAuthGroupFilter(c.Query("pool"))
+	}
 	if h.authManager == nil {
-		h.listAuthFilesFromDisk(c)
+		h.listAuthFilesFromDisk(c, groupFilter)
 		return
 	}
 	auths := h.authManager.List()
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
 		if entry := h.buildAuthFileEntry(auth); entry != nil {
+			if !matchesAuthGroupFilter(groupFilter, entry["auth_group"]) {
+				continue
+			}
 			files = append(files, entry)
 		}
 	}
@@ -307,34 +315,41 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 }
 
 // List auth files from disk when the auth manager is unavailable.
-func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
-	entries, err := os.ReadDir(h.cfg.AuthDir)
-	if err != nil {
-		c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read auth dir: %v", err)})
-		return
-	}
+func (h *Handler) listAuthFilesFromDisk(c *gin.Context, groupFilter string) {
 	files := make([]gin.H, 0)
-	for _, e := range entries {
-		if e.IsDir() {
+	for _, dir := range authListDirs(h.cfg) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
 			continue
 		}
-		name := e.Name()
-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
-			continue
-		}
-		if info, errInfo := e.Info(); errInfo == nil {
-			fileData := gin.H{"name": name, "size": info.Size(), "modtime": info.ModTime()}
-
-			// Read file to get type field
-			full := filepath.Join(h.cfg.AuthDir, name)
-			if data, errRead := os.ReadFile(full); errRead == nil {
-				typeValue := gjson.GetBytes(data, "type").String()
-				emailValue := gjson.GetBytes(data, "email").String()
-				fileData["type"] = typeValue
-				fileData["email"] = emailValue
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
 			}
+			name := e.Name()
+			if !strings.HasSuffix(strings.ToLower(name), ".json") {
+				continue
+			}
+			if info, errInfo := e.Info(); errInfo == nil {
+				full := filepath.Join(dir, name)
+				fileData := gin.H{"name": full, "size": info.Size(), "modtime": info.ModTime(), "path": full}
 
-			files = append(files, fileData)
+				if data, errRead := os.ReadFile(full); errRead == nil {
+					typeValue := gjson.GetBytes(data, "type").String()
+					emailValue := gjson.GetBytes(data, "email").String()
+					groupValue := extractAuthGroupFromJSON(data)
+					fileData["type"] = typeValue
+					fileData["email"] = emailValue
+					if groupValue != "" {
+						fileData["auth_group"] = groupValue
+					}
+				}
+
+				if !matchesAuthGroupFilter(groupFilter, fileData["auth_group"]) {
+					continue
+				}
+				files = append(files, fileData)
+			}
 		}
 	}
 	c.JSON(200, gin.H{"files": files})
@@ -414,6 +429,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	if claims := extractCodexIDTokenClaims(auth); claims != nil {
 		entry["id_token"] = claims
+	}
+	if group := auth.AuthGroup(); group != "" {
+		entry["auth_group"] = group
 	}
 	return entry
 }
@@ -745,6 +763,9 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 		"path":   path,
 		"source": path,
 	}
+	if group := normalizedAuthGroupFilter(extractAuthGroupFromMetadata(metadata)); group != "" {
+		attr["auth_group"] = group
+	}
 	auth := &coreauth.Auth{
 		ID:         authID,
 		Provider:   provider,
@@ -771,6 +792,78 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	}
 	_, err := h.authManager.Register(ctx, auth)
 	return err
+}
+
+func normalizedAuthGroupFilter(group string) string {
+	return strings.ToLower(strings.TrimSpace(group))
+}
+
+func matchesAuthGroupFilter(filter string, raw any) bool {
+	filter = normalizedAuthGroupFilter(filter)
+	if filter == "" {
+		return true
+	}
+	switch value := raw.(type) {
+	case string:
+		return normalizedAuthGroupFilter(value) == filter
+	default:
+		return false
+	}
+}
+
+func extractAuthGroupFromJSON(data []byte) string {
+	for _, key := range []string{"auth_group", "auth-group", "group"} {
+		value := normalizedAuthGroupFilter(gjson.GetBytes(data, key).String())
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func extractAuthGroupFromMetadata(metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	for _, key := range []string{"auth_group", "auth-group", "group"} {
+		raw, ok := metadata[key]
+		if !ok || raw == nil {
+			continue
+		}
+		if value, ok := raw.(string); ok {
+			normalized := normalizedAuthGroupFilter(value)
+			if normalized != "" {
+				return normalized
+			}
+		}
+	}
+	return ""
+}
+
+func authListDirs(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 4)
+	add := func(dir string) {
+		resolved, err := util.ResolveAuthDir(strings.TrimSpace(dir))
+		if err != nil || resolved == "" {
+			return
+		}
+		if _, exists := seen[resolved]; exists {
+			return
+		}
+		seen[resolved] = struct{}{}
+		out = append(out, resolved)
+	}
+	add(cfg.AuthDir)
+	for _, group := range cfg.AuthGroups {
+		for _, dir := range group.AuthDirs {
+			add(dir)
+		}
+	}
+	return out
 }
 
 // PatchAuthFileStatus toggles the disabled state of an auth file

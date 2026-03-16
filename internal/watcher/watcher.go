@@ -58,6 +58,7 @@ type Watcher struct {
 	storePersister    storePersister
 	mirroredAuthDir   string
 	oldConfigYaml     []byte
+	watchedAuthDirs   map[string]struct{}
 }
 
 // AuthUpdateAction represents the type of change detected in auth sources.

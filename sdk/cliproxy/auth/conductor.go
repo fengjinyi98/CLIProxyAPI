@@ -875,6 +875,39 @@ func pinnedAuthIDFromMetadata(meta map[string]any) string {
 	}
 }
 
+func clientAPIKeyFromMetadata(meta map[string]any) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	raw, ok := meta[cliproxyexecutor.ClientAPIKeyMetadataKey]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch val := raw.(type) {
+	case string:
+		return strings.TrimSpace(val)
+	case []byte:
+		return strings.TrimSpace(string(val))
+	default:
+		return ""
+	}
+}
+
+func authAllowedForGroups(candidate *Auth, allowedGroups map[string]struct{}, restricted bool) bool {
+	if candidate == nil {
+		return false
+	}
+	if !restricted {
+		return true
+	}
+	group := candidate.AuthGroup()
+	if group == "" {
+		return true
+	}
+	_, ok := allowedGroups[group]
+	return ok
+}
+
 func publishSelectedAuthMetadata(meta map[string]any, authID string) {
 	if len(meta) == 0 {
 		return
@@ -1694,6 +1727,7 @@ func (m *Manager) CloseExecutionSession(sessionID string) {
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	allowedGroups, restrictedGroups := m.allowedAuthGroupsForClientAPIKey(clientAPIKeyFromMetadata(opts.Metadata))
 
 	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
@@ -1713,6 +1747,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate.Provider != provider || candidate.Disabled {
+			continue
+		}
+		if !authAllowedForGroups(candidate, allowedGroups, restrictedGroups) {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -1754,6 +1791,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	allowedGroups, restrictedGroups := m.allowedAuthGroupsForClientAPIKey(clientAPIKeyFromMetadata(opts.Metadata))
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -1780,6 +1818,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
+			continue
+		}
+		if !authAllowedForGroups(candidate, allowedGroups, restrictedGroups) {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -1833,6 +1874,40 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		m.mu.Unlock()
 	}
 	return authCopy, executor, providerKey, nil
+}
+
+func (m *Manager) allowedAuthGroupsForClientAPIKey(apiKey string) (map[string]struct{}, bool) {
+	if m == nil {
+		return nil, false
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		return nil, false
+	}
+	return cfg.AllowedAuthGroups(apiKey)
+}
+
+// VisibleAuthIDsForClientAPIKey returns the auth IDs visible to the supplied client API key.
+// A nil map means the key is unrestricted and should see the global model list.
+func (m *Manager) VisibleAuthIDsForClientAPIKey(apiKey string) map[string]struct{} {
+	allowedGroups, restricted := m.allowedAuthGroupsForClientAPIKey(apiKey)
+	if !restricted {
+		return nil
+	}
+
+	visible := make(map[string]struct{})
+	m.mu.RLock()
+	for _, candidate := range m.auths {
+		if candidate == nil || candidate.Disabled {
+			continue
+		}
+		if !authAllowedForGroups(candidate, allowedGroups, true) {
+			continue
+		}
+		visible[candidate.ID] = struct{}{}
+	}
+	m.mu.RUnlock()
+	return visible
 }
 
 func (m *Manager) persist(ctx context.Context, auth *Auth) error {

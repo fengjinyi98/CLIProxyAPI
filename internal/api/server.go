@@ -752,6 +752,8 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		`}` +
 		`return fetch(url,opts);` +
 		`}` +
+		`window.__cpaResolveManagementKey=resolveManagementKey;` +
+		`window.__cpaPromptManagementKey=promptManagementKey;` +
 		`function isTeamAuth(file){` +
 		`if(!file){return false}` +
 		`var fields=[file.name,file.label,file.account_type,file.account,file.email,file.provider,file.type];` +
@@ -829,6 +831,31 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		`window.addEventListener('hashchange',updateVisibility);` +
 		`window.addEventListener('popstate',updateVisibility);` +
 		`updateVisibility();` +
+		`})()</script>`
+
+	injection += `<script>(function(){` +
+		`if(typeof window==='undefined'||!window.fetch){return}` +
+		`var nativeFetch=window.fetch.bind(window);` +
+		`var STORAGE_KEY='cpa_auth_group_filter';` +
+		`function normalizeGroup(v){return (v||'').toString().trim().toLowerCase()}` +
+		`function getSelectedGroup(){try{return normalizeGroup(sessionStorage.getItem(STORAGE_KEY)||localStorage.getItem(STORAGE_KEY)||'')}catch(_e){return ''}}` +
+		`function setSelectedGroup(v){var value=normalizeGroup(v);try{sessionStorage.setItem(STORAGE_KEY,value);localStorage.setItem(STORAGE_KEY,value)}catch(_e){}}` +
+		`function isAuthFilesRoute(){return typeof window!=='undefined'&&window.location&&window.location.hash&&window.location.hash.indexOf('/auth-files')!==-1}` +
+		`function requestMethod(input,init){if(init&&init.method){return String(init.method).toUpperCase()}if(input&&typeof input==='object'&&input.method){return String(input.method).toUpperCase()}return 'GET'}` +
+		`function requestURL(input){if(typeof input==='string'){return input}if(input&&typeof input==='object'&&input.url){return input.url}return ''}` +
+		`function shouldFilter(url,method){if(method!=='GET'){return false}try{var u=new URL(url,window.location.origin);return u.pathname==='/v0/management/auth-files'}catch(_e){return false}}` +
+		`function appendGroup(url){var group=getSelectedGroup();if(!group){return url}try{var u=new URL(url,window.location.origin);u.searchParams.set('group',group);return u.toString()}catch(_e){return url}}` +
+		`window.fetch=function(input,init){var url=requestURL(input);var method=requestMethod(input,init);if(!isAuthFilesRoute()||!shouldFilter(url,method)){return nativeFetch(input,init)}var nextURL=appendGroup(url);if(typeof input==='string'){return nativeFetch(nextURL,init)}try{return nativeFetch(new Request(nextURL,input),init)}catch(_e){return nativeFetch(nextURL,init)}};` +
+		`if(window.XMLHttpRequest&&window.XMLHttpRequest.prototype){var origOpen=window.XMLHttpRequest.prototype.open;window.XMLHttpRequest.prototype.open=function(method,url){try{var upper=String(method||'GET').toUpperCase();var raw=typeof url==='string'?url:String(url||'');if(isAuthFilesRoute()&&shouldFilter(raw,upper)){arguments[1]=appendGroup(raw)}}catch(_e){}return origOpen.apply(this,arguments)}}` +
+		`function authHeaders(){var headers=new Headers();try{var resolveKey=window.__cpaResolveManagementKey;var promptKey=window.__cpaPromptManagementKey;var key=typeof resolveKey==='function'?resolveKey():'';if(!key&&typeof promptKey==='function'){key=promptKey()}if(key){headers.set('Authorization','Bearer '+key)}}catch(_e){}return headers}` +
+		`async function fetchAuthGroups(){var resp=await nativeFetch('/v0/management/auth-files',{headers:authHeaders()});if(resp.status===401){var promptKey=window.__cpaPromptManagementKey;var key=typeof promptKey==='function'?promptKey():'';if(key){resp=await nativeFetch('/v0/management/auth-files',{headers:authHeaders()})}}if(!resp.ok){throw new Error('获取认证文件失败('+resp.status+')')}var data=await resp.json();var files=Array.isArray(data&&data.files)?data.files:[];var groups={};for(var i=0;i<files.length;i++){var g=normalizeGroup(files[i]&&files[i].auth_group);if(g){groups[g]=true}}return Object.keys(groups).sort()}` +
+		`var wrap=null;var select=null;` +
+		`function ensureUI(){if(wrap){return}wrap=document.createElement('div');wrap.style.cssText='position:fixed;bottom:116px;right:20px;z-index:99999;display:none;align-items:center;gap:8px;background:rgba(15,23,42,.92);color:#fff;padding:10px 12px;border-radius:10px;box-shadow:0 10px 30px rgba(15,23,42,.28);font:13px/1.2 system-ui,sans-serif';var label=document.createElement('span');label.textContent='池子';label.style.cssText='opacity:.88;font-weight:600';select=document.createElement('select');select.style.cssText='min-width:120px;padding:6px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.18);background:#fff;color:#0f172a;font:13px system-ui,sans-serif';select.onchange=function(){setSelectedGroup(select.value);window.location.reload()};wrap.appendChild(label);wrap.appendChild(select);document.body.appendChild(wrap)}` +
+		`function renderOptions(groups){if(!select){return}var selected=getSelectedGroup();select.innerHTML='';var all=document.createElement('option');all.value='';all.textContent='全部';select.appendChild(all);for(var i=0;i<groups.length;i++){var option=document.createElement('option');option.value=groups[i];option.textContent=groups[i];select.appendChild(option)}select.value=selected}` +
+		`async function refreshUI(){ensureUI();if(!wrap){return}wrap.style.display=isAuthFilesRoute()?'inline-flex':'none';if(!isAuthFilesRoute()){return}try{var groups=await fetchAuthGroups();renderOptions(groups)}catch(_e){renderOptions([])}}` +
+		`window.addEventListener('hashchange',refreshUI);` +
+		`window.addEventListener('popstate',refreshUI);` +
+		`if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',refreshUI)}else{refreshUI()}` +
 		`})()</script>`
 
 	html := strings.Replace(string(data), "</body>", injection+"</body>", 1)

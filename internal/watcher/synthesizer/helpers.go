@@ -118,3 +118,14 @@ func addConfigHeadersToAttrs(headers map[string]string, attrs map[string]string)
 		attrs["header:"+key] = val
 	}
 }
+
+func setAuthGroupAttr(attrs map[string]string, group string) {
+	if attrs == nil {
+		return
+	}
+	trimmed := strings.ToLower(strings.TrimSpace(group))
+	if trimmed == "" {
+		return
+	}
+	attrs["auth_group"] = trimmed
+}

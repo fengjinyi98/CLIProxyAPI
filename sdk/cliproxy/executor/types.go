@@ -11,6 +11,8 @@ import (
 const RequestedModelMetadataKey = "requested_model"
 
 const (
+	// ClientAPIKeyMetadataKey stores the authenticated client-facing API key in Options.Metadata.
+	ClientAPIKeyMetadataKey = "client_api_key"
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.

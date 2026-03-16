@@ -5,11 +5,14 @@ package watcher
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -250,24 +253,59 @@ func normalizeAuth(a *coreauth.Auth) *coreauth.Auth {
 }
 
 func snapshotCoreAuths(cfg *config.Config, authDir string) []*coreauth.Auth {
-	ctx := &synthesizer.SynthesisContext{
-		Config:      cfg,
-		AuthDir:     authDir,
-		Now:         time.Now(),
-		IDGenerator: synthesizer.NewStableIDGenerator(),
-	}
+	now := time.Now()
+	idGen := synthesizer.NewStableIDGenerator()
 
 	var out []*coreauth.Auth
 
 	configSynth := synthesizer.NewConfigSynthesizer()
-	if auths, err := configSynth.Synthesize(ctx); err == nil {
+	if auths, err := configSynth.Synthesize(&synthesizer.SynthesisContext{
+		Config:      cfg,
+		AuthDir:     authDir,
+		Now:         now,
+		IDGenerator: idGen,
+	}); err == nil {
 		out = append(out, auths...)
 	}
 
 	fileSynth := synthesizer.NewFileSynthesizer()
-	if auths, err := fileSynth.Synthesize(ctx); err == nil {
-		out = append(out, auths...)
+	for _, dir := range effectiveAuthDirs(cfg, authDir) {
+		if auths, err := fileSynth.Synthesize(&synthesizer.SynthesisContext{
+			Config:      cfg,
+			AuthDir:     dir,
+			Now:         now,
+			IDGenerator: idGen,
+		}); err == nil {
+			out = append(out, auths...)
+		}
 	}
 
+	return out
+}
+
+func effectiveAuthDirs(cfg *config.Config, primaryAuthDir string) []string {
+	out := make([]string, 0, 4)
+	seen := make(map[string]struct{})
+	add := func(dir string) {
+		resolved, err := util.ResolveAuthDir(strings.TrimSpace(dir))
+		if err != nil || resolved == "" {
+			return
+		}
+		resolved = filepath.Clean(resolved)
+		if _, exists := seen[resolved]; exists {
+			return
+		}
+		seen[resolved] = struct{}{}
+		out = append(out, resolved)
+	}
+
+	add(primaryAuthDir)
+	if cfg != nil {
+		for _, group := range cfg.AuthGroups {
+			for _, dir := range group.AuthDirs {
+				add(dir)
+			}
+		}
+	}
 	return out
 }

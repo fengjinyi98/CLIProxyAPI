@@ -37,6 +37,22 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Optional: bind client API keys to auth pools and auth directories.
+# Requests authenticated by a mapped key only use auth files from the same pool,
+# plus any credentials without an explicit pool.
+# auth-groups:
+#   - name: "normal"
+#     api-keys:
+#       - "your-api-key-1"
+#     auth-dirs:
+#       - "~/.cli-proxy-api/auths-normal"
+#   - name: "team"
+#     api-keys:
+#       - "your-api-key-2"
+#       - "your-api-key-3"
+#     auth-dirs:
+#       - "~/.cli-proxy-api/auths-team"
+
 # Enable debug logging
 debug: false
 

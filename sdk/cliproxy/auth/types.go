@@ -224,6 +224,33 @@ func (a *Auth) ProxyInfo() string {
 	return "via proxy"
 }
 
+// AuthGroup returns the normalized auth group/pool name when configured.
+func (a *Auth) AuthGroup() string {
+	if a == nil {
+		return ""
+	}
+	if a.Attributes != nil {
+		if group := strings.ToLower(strings.TrimSpace(a.Attributes["auth_group"])); group != "" {
+			return group
+		}
+	}
+	if a.Metadata != nil {
+		for _, key := range []string{"auth_group", "auth-group", "group"} {
+			raw, ok := a.Metadata[key]
+			if !ok || raw == nil {
+				continue
+			}
+			if value, ok := raw.(string); ok {
+				group := strings.ToLower(strings.TrimSpace(value))
+				if group != "" {
+					return group
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // DisableCoolingOverride returns the auth-file scoped disable_cooling override when present.
 // The value is read from metadata key "disable_cooling" (or legacy "disable-cooling").
 func (a *Auth) DisableCoolingOverride() (bool, bool) {

@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -70,12 +72,17 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 		}
 		// Use relative path under authDir as ID to stay consistent with the file-based token store
 		id := full
-		if rel, errRel := filepath.Rel(ctx.AuthDir, full); errRel == nil && rel != "" {
-			id = rel
+		fileName := filepath.Base(full)
+		if shouldUseRelativeAuthID(ctx, ctx.AuthDir) {
+			if rel, errRel := filepath.Rel(ctx.AuthDir, full); errRel == nil && rel != "" {
+				id = rel
+				fileName = rel
+			}
 		}
 		// On Windows, normalize ID casing to avoid duplicate auth entries caused by case-insensitive paths.
 		if runtime.GOOS == "windows" {
 			id = strings.ToLower(id)
+			fileName = strings.ToLower(fileName)
 		}
 
 		proxyURL := ""
@@ -103,6 +110,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 
 		a := &coreauth.Auth{
 			ID:       id,
+			FileName: fileName,
 			Provider: provider,
 			Label:    label,
 			Prefix:   prefix,
@@ -116,6 +124,9 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
 			Metadata:  metadata,
 			CreatedAt: now,
 			UpdatedAt: now,
+		}
+		if group := resolveAuthGroup(ctx.Config, full, metadata); group != "" {
+			a.Attributes["auth_group"] = group
 		}
 		// Read priority from auth file
 		if rawPriority, ok := metadata["priority"]; ok {
@@ -188,6 +199,9 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		if authPath != "" {
 			attrs["path"] = authPath
 		}
+		if group := strings.TrimSpace(primary.Attributes["auth_group"]); group != "" {
+			attrs["auth_group"] = group
+		}
 		// Propagate priority from primary auth to virtual auths
 		if priorityVal, hasPriority := primary.Attributes["priority"]; hasPriority && priorityVal != "" {
 			attrs["priority"] = priorityVal
@@ -198,6 +212,9 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 			"virtual":           true,
 			"virtual_parent_id": primary.ID,
 			"type":              metadata["type"],
+		}
+		if group := strings.TrimSpace(primary.Attributes["auth_group"]); group != "" {
+			metadataCopy["auth_group"] = group
 		}
 		if v, ok := metadata["disable_cooling"]; ok {
 			metadataCopy["disable_cooling"] = v
@@ -229,6 +246,72 @@ func SynthesizeGeminiVirtualAuths(primary *coreauth.Auth, metadata map[string]an
 		virtuals = append(virtuals, virtual)
 	}
 	return virtuals
+}
+
+func extractAuthGroupFromMetadata(metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	for _, key := range []string{"auth_group", "auth-group", "group"} {
+		raw, ok := metadata[key]
+		if !ok || raw == nil {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func resolveAuthGroup(cfg *config.Config, fullPath string, metadata map[string]any) string {
+	if group := extractAuthGroupFromMetadata(metadata); group != "" {
+		return group
+	}
+	if cfg == nil || fullPath == "" {
+		return ""
+	}
+	cleanPath := filepath.Clean(fullPath)
+	for _, entry := range cfg.AuthGroups {
+		group := strings.ToLower(strings.TrimSpace(entry.Name))
+		if group == "" {
+			continue
+		}
+		for _, dir := range entry.AuthDirs {
+			resolvedDir, err := util.ResolveAuthDir(strings.TrimSpace(dir))
+			if err != nil {
+				continue
+			}
+			cleanDir := filepath.Clean(resolvedDir)
+			if cleanDir == "" {
+				continue
+			}
+			prefix := cleanDir + string(os.PathSeparator)
+			if cleanPath == cleanDir || strings.HasPrefix(cleanPath, prefix) {
+				return group
+			}
+		}
+	}
+	return ""
+}
+
+func shouldUseRelativeAuthID(ctx *SynthesisContext, scopeDir string) bool {
+	if ctx == nil || ctx.Config == nil {
+		return true
+	}
+	primary, _ := util.ResolveAuthDir(strings.TrimSpace(ctx.Config.AuthDir))
+	scope, _ := util.ResolveAuthDir(strings.TrimSpace(scopeDir))
+	if strings.TrimSpace(primary) == "" || strings.TrimSpace(scope) == "" {
+		return true
+	}
+	primary = filepath.Clean(primary)
+	scope = filepath.Clean(scope)
+	return primary == scope
 }
 
 // splitGeminiProjectIDs extracts and deduplicates project IDs from metadata.

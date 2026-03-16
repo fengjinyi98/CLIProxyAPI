@@ -759,6 +759,105 @@ func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any 
 	return models
 }
 
+// GetAvailableModelsForClients returns available models restricted to a set of client IDs.
+// A nil allowedClientIDs map means unrestricted and falls back to the global model list.
+func (r *ModelRegistry) GetAvailableModelsForClients(handlerType string, allowedClientIDs map[string]struct{}) []map[string]any {
+	if allowedClientIDs == nil {
+		return r.GetAvailableModels(handlerType)
+	}
+
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	if len(allowedClientIDs) == 0 {
+		return []map[string]any{}
+	}
+
+	type modelAvailability struct {
+		info            *ModelInfo
+		availableCount  int
+		cooldownCount   int
+		otherBlockCount int
+	}
+
+	models := make(map[string]*modelAvailability)
+	quotaExpiredDuration := 5 * time.Minute
+	now := time.Now()
+
+	for clientID := range allowedClientIDs {
+		modelIDs, exists := r.clientModels[clientID]
+		if !exists || len(modelIDs) == 0 {
+			continue
+		}
+		clientInfos := r.clientModelInfos[clientID]
+		for _, modelID := range modelIDs {
+			modelID = strings.TrimSpace(modelID)
+			if modelID == "" {
+				continue
+			}
+			entry := models[modelID]
+			if entry == nil {
+				entry = &modelAvailability{}
+				models[modelID] = entry
+			}
+			if entry.info == nil {
+				if clientInfos != nil {
+					if info := clientInfos[modelID]; info != nil {
+						entry.info = cloneModelInfo(info)
+					}
+				}
+				if entry.info == nil {
+					if reg, ok := r.models[modelID]; ok && reg != nil && reg.Info != nil {
+						entry.info = cloneModelInfo(reg.Info)
+					}
+				}
+			}
+
+			registration, ok := r.models[modelID]
+			if !ok || registration == nil {
+				entry.availableCount++
+				continue
+			}
+
+			quotaBlocked := false
+			if quotaTime, ok := registration.QuotaExceededClients[clientID]; ok && quotaTime != nil && now.Sub(*quotaTime) < quotaExpiredDuration {
+				quotaBlocked = true
+			}
+			if reason, suspended := registration.SuspendedClients[clientID]; suspended {
+				if strings.EqualFold(reason, "quota") {
+					entry.cooldownCount++
+				} else {
+					entry.otherBlockCount++
+				}
+				continue
+			}
+			if quotaBlocked {
+				entry.cooldownCount++
+				continue
+			}
+			entry.availableCount++
+		}
+	}
+
+	result := make([]map[string]any, 0, len(models))
+	for _, entry := range models {
+		if entry == nil || entry.info == nil {
+			continue
+		}
+		if entry.availableCount <= 0 && entry.cooldownCount <= 0 {
+			continue
+		}
+		if entry.availableCount <= 0 && entry.otherBlockCount > 0 {
+			continue
+		}
+		model := r.convertModelToMap(entry.info, handlerType)
+		if model != nil {
+			result = append(result, model)
+		}
+	}
+	return result
+}
+
 // GetAvailableModelsByProvider returns models available for the given provider identifier.
 // Parameters:
 //   - provider: Provider identifier (e.g., "codex", "gemini", "antigravity")

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -75,9 +74,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 
 		w.lastAuthHashes = make(map[string]string)
 		w.lastAuthContents = make(map[string]*coreauth.Auth)
-		if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
-			log.Errorf("failed to resolve auth directory for hash cache: %v", errResolveAuthDir)
-		} else if resolvedAuthDir != "" {
+		for _, resolvedAuthDir := range effectiveAuthDirs(cfg, w.authDir) {
 			_ = filepath.Walk(resolvedAuthDir, func(path string, info fs.FileInfo, err error) error {
 				if err != nil {
 					return nil
@@ -211,32 +208,25 @@ func (w *Watcher) loadFileClients(cfg *config.Config) int {
 	authFileCount := 0
 	successfulAuthCount := 0
 
-	authDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir)
-	if errResolveAuthDir != nil {
-		log.Errorf("failed to resolve auth directory: %v", errResolveAuthDir)
-		return 0
-	}
-	if authDir == "" {
-		return 0
-	}
-
-	errWalk := filepath.Walk(authDir, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			log.Debugf("error accessing path %s: %v", path, err)
-			return err
-		}
-		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".json") {
-			authFileCount++
-			log.Debugf("processing auth file %d: %s", authFileCount, filepath.Base(path))
-			if data, errCreate := os.ReadFile(path); errCreate == nil && len(data) > 0 {
-				successfulAuthCount++
+	for _, authDir := range effectiveAuthDirs(cfg, w.authDir) {
+		errWalk := filepath.Walk(authDir, func(path string, info fs.FileInfo, err error) error {
+			if err != nil {
+				log.Debugf("error accessing path %s: %v", path, err)
+				return err
 			}
-		}
-		return nil
-	})
+			if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".json") {
+				authFileCount++
+				log.Debugf("processing auth file %d: %s", authFileCount, filepath.Base(path))
+				if data, errCreate := os.ReadFile(path); errCreate == nil && len(data) > 0 {
+					successfulAuthCount++
+				}
+			}
+			return nil
+		})
 
-	if errWalk != nil {
-		log.Errorf("error walking auth directory: %v", errWalk)
+		if errWalk != nil {
+			log.Errorf("error walking auth directory %s: %v", authDir, errWalk)
+		}
 	}
 	log.Debugf("auth directory scan complete - found %d .json files, %d readable", authFileCount, successfulAuthCount)
 	return authFileCount

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -208,7 +209,39 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
 	}
+	if clientAPIKey := clientAPIKeyFromContext(ctx); clientAPIKey != "" {
+		meta[coreexecutor.ClientAPIKeyMetadataKey] = clientAPIKey
+	}
 	return meta
+}
+
+func clientAPIKeyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return ""
+	}
+	return clientAPIKeyFromGin(ginCtx)
+}
+
+func clientAPIKeyFromGin(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	raw, exists := c.Get("apiKey")
+	if !exists || raw == nil {
+		return ""
+	}
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", value))
+	}
 }
 
 func pinnedAuthIDFromContext(ctx context.Context) string {
@@ -286,6 +319,23 @@ func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager) *B
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
 func (h *BaseAPIHandler) UpdateClients(cfg *config.SDKConfig) { h.Cfg = cfg }
+
+// VisibleModels returns models visible to the current authenticated client key.
+// When no auth-group restriction applies, it falls back to the global model list.
+func (h *BaseAPIHandler) VisibleModels(c *gin.Context, handlerType string) []map[string]any {
+	reg := registry.GetGlobalRegistry()
+	if reg == nil {
+		return nil
+	}
+	if h == nil || h.AuthManager == nil {
+		return reg.GetAvailableModels(handlerType)
+	}
+	allowed := h.AuthManager.VisibleAuthIDsForClientAPIKey(clientAPIKeyFromGin(c))
+	if allowed == nil {
+		return reg.GetAvailableModels(handlerType)
+	}
+	return reg.GetAvailableModelsForClients(handlerType, allowed)
+}
 
 // GetAlt extracts the 'alt' parameter from the request query string.
 // It checks both 'alt' and '$alt' parameters and returns the appropriate value.

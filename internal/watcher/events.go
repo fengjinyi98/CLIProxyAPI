@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -33,11 +34,9 @@ func (w *Watcher) start(ctx context.Context) error {
 	}
 	log.Debugf("watching config file: %s", w.configPath)
 
-	if errAddAuthDir := w.watcher.Add(w.authDir); errAddAuthDir != nil {
-		log.Errorf("failed to watch auth directory %s: %v", w.authDir, errAddAuthDir)
-		return errAddAuthDir
+	if errSync := w.syncAuthDirWatches(nil); errSync != nil {
+		return errSync
 	}
-	log.Debugf("watching auth directory: %s", w.authDir)
 
 	go w.processEvents(ctx)
 
@@ -69,10 +68,9 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
 	normalizedName := w.normalizeAuthPath(event.Name)
 	normalizedConfigPath := w.normalizeAuthPath(w.configPath)
-	normalizedAuthDir := w.normalizeAuthPath(w.authDir)
 	isConfigEvent := normalizedName == normalizedConfigPath && event.Op&configOps != 0
 	authOps := fsnotify.Create | fsnotify.Write | fsnotify.Remove | fsnotify.Rename
-	isAuthJSON := strings.HasPrefix(normalizedName, normalizedAuthDir) && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
+	isAuthJSON := w.isUnderKnownAuthDir(normalizedName) && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
 	if !isConfigEvent && !isAuthJSON {
 		// Ignore unrelated files (e.g., cookie snapshots *.cookie) and other noise.
 		return
@@ -122,6 +120,92 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
 		w.addOrUpdateClient(event.Name)
 	}
+}
+
+func (w *Watcher) isUnderKnownAuthDir(normalizedPath string) bool {
+	if normalizedPath == "" {
+		return false
+	}
+	w.clientsMutex.RLock()
+	watched := make(map[string]struct{}, len(w.watchedAuthDirs))
+	for dir := range w.watchedAuthDirs {
+		watched[dir] = struct{}{}
+	}
+	cfg := w.config
+	w.clientsMutex.RUnlock()
+	if len(watched) == 0 {
+		for _, dir := range effectiveAuthDirs(cfg, w.authDir) {
+			watched[w.normalizeAuthPath(dir)] = struct{}{}
+		}
+	}
+	for dir := range watched {
+		if normalizedPath == dir || strings.HasPrefix(normalizedPath, dir+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *Watcher) syncAuthDirWatches(cfg *config.Config) error {
+	if w == nil || w.watcher == nil {
+		return nil
+	}
+	if cfg == nil {
+		w.clientsMutex.RLock()
+		cfg = w.config
+		w.clientsMutex.RUnlock()
+	}
+	desiredSlice := effectiveAuthDirs(cfg, w.authDir)
+	desired := make(map[string]struct{}, len(desiredSlice))
+	for _, dir := range desiredSlice {
+		desired[w.normalizeAuthPath(dir)] = struct{}{}
+	}
+	primaryDir := ""
+	if len(desiredSlice) > 0 {
+		primaryDir = w.normalizeAuthPath(desiredSlice[0])
+	}
+
+	w.clientsMutex.Lock()
+	if w.watchedAuthDirs == nil {
+		w.watchedAuthDirs = make(map[string]struct{})
+	}
+	current := make(map[string]struct{}, len(w.watchedAuthDirs))
+	for dir := range w.watchedAuthDirs {
+		current[dir] = struct{}{}
+	}
+	w.clientsMutex.Unlock()
+
+	for dir := range current {
+		if _, keep := desired[dir]; keep {
+			continue
+		}
+		if errRemove := w.watcher.Remove(dir); errRemove != nil {
+			log.Debugf("failed to unwatch auth directory %s: %v", dir, errRemove)
+		}
+		log.Debugf("stopped watching auth directory: %s", dir)
+	}
+	for _, dir := range desiredSlice {
+		normalized := w.normalizeAuthPath(dir)
+		if _, exists := current[normalized]; exists {
+			continue
+		}
+		if normalized != primaryDir {
+			if errMkdir := os.MkdirAll(dir, 0o755); errMkdir != nil {
+				log.Errorf("failed to create auth directory %s: %v", dir, errMkdir)
+				return errMkdir
+			}
+		}
+		if errAddAuthDir := w.watcher.Add(dir); errAddAuthDir != nil {
+			log.Errorf("failed to watch auth directory %s: %v", dir, errAddAuthDir)
+			return errAddAuthDir
+		}
+		log.Debugf("watching auth directory: %s", dir)
+	}
+
+	w.clientsMutex.Lock()
+	w.watchedAuthDirs = desired
+	w.clientsMutex.Unlock()
+	return nil
 }
 
 func (w *Watcher) authFileUnchanged(path string) (bool, error) {

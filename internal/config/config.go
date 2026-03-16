@@ -81,6 +81,11 @@ type Config struct {
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
+	// AuthGroups maps client-facing API keys to named auth groups/pools.
+	// Requests authenticated by a mapped key only use auth entries in the same group,
+	// plus any auth entries that do not declare a group (shared/global auths).
+	AuthGroups []ClientAuthGroup `yaml:"auth-groups,omitempty" json:"auth-groups,omitempty"`
+
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 
@@ -179,6 +184,18 @@ type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+}
+
+// ClientAuthGroup binds one or more client API keys to a named auth group/pool.
+type ClientAuthGroup struct {
+	// Name is the auth group/pool name, for example "normal" or "team".
+	Name string `yaml:"name" json:"name"`
+
+	// APIKeys are the client-facing API keys that should be restricted to this group.
+	APIKeys []string `yaml:"api-keys,omitempty" json:"api-keys,omitempty"`
+
+	// AuthDirs lists auth file directories that belong to this group.
+	AuthDirs []string `yaml:"auth-dirs,omitempty" json:"auth-dirs,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -323,6 +340,9 @@ type ClaudeKey struct {
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/claude-sonnet-4").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
+	// Group restricts this credential to a named auth group/pool.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
+
 	// BaseURL is the base URL for the Claude API endpoint.
 	// If empty, the default Claude API URL will be used.
 	BaseURL string `yaml:"base-url" json:"base-url"`
@@ -370,6 +390,9 @@ type CodexKey struct {
 
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gpt-5-codex").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// Group restricts this credential to a named auth group/pool.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
 
 	// BaseURL is the base URL for the Codex API endpoint.
 	// If empty, the default Codex API URL will be used.
@@ -419,6 +442,9 @@ type GeminiKey struct {
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
+	// Group restricts this credential to a named auth group/pool.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
+
 	// BaseURL optionally overrides the Gemini API endpoint.
 	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
 
@@ -462,6 +488,9 @@ type OpenAICompatibility struct {
 
 	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// Group restricts this provider credential set to a named auth group/pool.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
 
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
 	BaseURL string `yaml:"base-url" json:"base-url"`
@@ -621,6 +650,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
 
+	// Sanitize auth-group bindings.
+	cfg.SanitizeAuthGroups()
+
 	// Normalize OAuth provider model exclusion map.
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 
@@ -754,6 +786,7 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 		e := cfg.OpenAICompatibility[i]
 		e.Name = strings.TrimSpace(e.Name)
 		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.Group = normalizeAuthGroupName(e.Group)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		if e.BaseURL == "" {
@@ -775,6 +808,7 @@ func (cfg *Config) SanitizeCodexKeys() {
 	for i := range cfg.CodexKey {
 		e := cfg.CodexKey[i]
 		e.Prefix = normalizeModelPrefix(e.Prefix)
+		e.Group = normalizeAuthGroupName(e.Group)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
@@ -794,6 +828,7 @@ func (cfg *Config) SanitizeClaudeKeys() {
 	for i := range cfg.ClaudeKey {
 		entry := &cfg.ClaudeKey[i]
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.Group = normalizeAuthGroupName(entry.Group)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
 	}
@@ -814,6 +849,7 @@ func (cfg *Config) SanitizeGeminiKeys() {
 			continue
 		}
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.Group = normalizeAuthGroupName(entry.Group)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.Headers = NormalizeHeaders(entry.Headers)
@@ -827,6 +863,58 @@ func (cfg *Config) SanitizeGeminiKeys() {
 	cfg.GeminiKey = out
 }
 
+// SanitizeAuthGroups trims names and keys, removes invalid entries, and deduplicates keys per group.
+func (cfg *Config) SanitizeAuthGroups() {
+	if cfg == nil || len(cfg.AuthGroups) == 0 {
+		return
+	}
+	out := make([]ClientAuthGroup, 0, len(cfg.AuthGroups))
+	for i := range cfg.AuthGroups {
+		entry := cfg.AuthGroups[i]
+		entry.Name = normalizeAuthGroupName(entry.Name)
+		if entry.Name == "" {
+			continue
+		}
+		seenKeys := make(map[string]struct{}, len(entry.APIKeys))
+		keys := make([]string, 0, len(entry.APIKeys))
+		for _, rawKey := range entry.APIKeys {
+			key := strings.TrimSpace(rawKey)
+			if key == "" {
+				continue
+			}
+			if _, exists := seenKeys[key]; exists {
+				continue
+			}
+			seenKeys[key] = struct{}{}
+			keys = append(keys, key)
+		}
+		if len(keys) == 0 {
+			entry.APIKeys = nil
+		} else {
+			entry.APIKeys = keys
+		}
+		dirs := make([]string, 0, len(entry.AuthDirs))
+		seenDirs := make(map[string]struct{}, len(entry.AuthDirs))
+		for _, rawDir := range entry.AuthDirs {
+			dir := strings.TrimSpace(rawDir)
+			if dir == "" {
+				continue
+			}
+			if _, exists := seenDirs[dir]; exists {
+				continue
+			}
+			seenDirs[dir] = struct{}{}
+			dirs = append(dirs, dir)
+		}
+		if len(entry.APIKeys) == 0 && len(dirs) == 0 {
+			continue
+		}
+		entry.AuthDirs = dirs
+		out = append(out, entry)
+	}
+	cfg.AuthGroups = out
+}
+
 func normalizeModelPrefix(prefix string) string {
 	trimmed := strings.TrimSpace(prefix)
 	trimmed = strings.Trim(trimmed, "/")
@@ -837,6 +925,47 @@ func normalizeModelPrefix(prefix string) string {
 		return ""
 	}
 	return trimmed
+}
+
+func normalizeAuthGroupName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.ToLower(trimmed)
+}
+
+// AllowedAuthGroups returns the auth groups available to the provided client API key.
+// The second return value reports whether the key is explicitly restricted by auth-groups.
+func (cfg *Config) AllowedAuthGroups(apiKey string) (map[string]struct{}, bool) {
+	if cfg == nil || len(cfg.AuthGroups) == 0 {
+		return nil, false
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, false
+	}
+
+	groups := make(map[string]struct{})
+	restricted := false
+	for _, entry := range cfg.AuthGroups {
+		groupName := normalizeAuthGroupName(entry.Name)
+		if groupName == "" || len(entry.APIKeys) == 0 {
+			continue
+		}
+		for _, candidate := range entry.APIKeys {
+			if strings.TrimSpace(candidate) != apiKey {
+				continue
+			}
+			groups[groupName] = struct{}{}
+			restricted = true
+			break
+		}
+	}
+	if len(groups) == 0 {
+		return nil, restricted
+	}
+	return groups, restricted
 }
 
 // looksLikeBcrypt returns true if the provided string appears to be a bcrypt hash.

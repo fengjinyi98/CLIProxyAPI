@@ -20,6 +20,9 @@ type VertexCompatKey struct {
 	// Prefix optionally namespaces model aliases for this credential (e.g., "teamA/vertex-pro").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
+	// Group restricts this credential to a named auth group/pool.
+	Group string `yaml:"group,omitempty" json:"group,omitempty"`
+
 	// BaseURL is the base URL for the Vertex-compatible API endpoint.
 	// The executor will append "/v1/publishers/google/models/{model}:action" to this.
 	// Example: "https://zenmux.ai/api" becomes "https://zenmux.ai/api/v1/publishers/google/models/..."
@@ -67,6 +70,7 @@ func (cfg *Config) SanitizeVertexCompatKeys() {
 			continue
 		}
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.Group = normalizeAuthGroupName(entry.Group)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		if entry.BaseURL == "" {
 			// BaseURL is required for Vertex API key entries
