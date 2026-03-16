@@ -17,6 +17,8 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
+var snapshotCoreAuthsFunc = snapshotCoreAuths
+
 func (w *Watcher) setAuthUpdateQueue(queue chan<- AuthUpdate) {
 	w.clientsMutex.Lock()
 	defer w.clientsMutex.Unlock()
@@ -79,7 +81,11 @@ func (w *Watcher) dispatchRuntimeAuthUpdate(update AuthUpdate) bool {
 }
 
 func (w *Watcher) refreshAuthState(force bool) {
-	auths := w.SnapshotCoreAuths()
+	w.clientsMutex.RLock()
+	cfg := w.config
+	authDir := w.authDir
+	w.clientsMutex.RUnlock()
+	auths := snapshotCoreAuthsFunc(cfg, authDir)
 	w.clientsMutex.Lock()
 	if len(w.runtimeAuths) > 0 {
 		for _, a := range w.runtimeAuths {
@@ -308,4 +314,25 @@ func effectiveAuthDirs(cfg *config.Config, primaryAuthDir string) []string {
 		}
 	}
 	return out
+}
+
+func authScopeDirForPath(cfg *config.Config, primaryAuthDir, path string) string {
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	best := ""
+	for _, dir := range effectiveAuthDirs(cfg, primaryAuthDir) {
+		cleanDir := filepath.Clean(strings.TrimSpace(dir))
+		if cleanDir == "" {
+			continue
+		}
+		if cleanPath != cleanDir && !strings.HasPrefix(cleanPath, cleanDir+string(filepath.Separator)) {
+			continue
+		}
+		if len(cleanDir) > len(best) {
+			best = cleanDir
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return primaryAuthDir
 }
