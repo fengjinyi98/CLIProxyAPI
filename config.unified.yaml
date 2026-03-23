@@ -1,31 +1,25 @@
 # Server host/interface to bind to. Default is empty ("") to bind all interfaces (IPv4 + IPv6).
 # Use "127.0.0.1" or "localhost" to restrict access to local machine only.
 host: ""
-
 # Single-process unified port
 port: 8317
-
 # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
 tls:
   enable: false
   cert: ""
   key: ""
-
 # Management API settings
 remote-management:
   allow-remote: false
   secret-key: "$2a$10$w2bNYLnPwDapkRlmdP.aeeLzJIzMU.lQivZORhoxmnuXz8xE.N3we"
   disable-control-panel: false
   panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
-
 # Primary auth directory. Extra pools are declared below in auth-groups.auth-dirs.
 auth-dir: "/Users/fengjinyi/.cli-proxy-api/auths-normal"
-
 # Client-facing API keys
 api-keys:
   - sk-CSixhNHcYqntT0yhH
   - skteam-Q1Gexlcgeehk754WE
-
 # Bind client API keys to pools and auth directories.
 auth-groups:
   - name: normal
@@ -38,37 +32,28 @@ auth-groups:
       - skteam-Q1Gexlcgeehk754WE
     auth-dirs:
       - "/Users/fengjinyi/.cli-proxy-api/auths-team"
-
 debug: true
-
 pprof:
   enable: false
   addr: "127.0.0.1:8316"
-
 commercial-mode: false
 logging-to-file: false
 logs-max-total-size-mb: 0
 error-logs-max-files: 10
 usage-statistics-enabled: true
-
 proxy-url: "http://127.0.0.1:7897"
 force-model-prefix: false
 passthrough-headers: false
-
 request-retry: 3
 max-retry-credentials: 0
 max-retry-interval: 30
-
 quota-exceeded:
   switch-project: true
   switch-preview-model: true
-
 routing:
   strategy: "round-robin"
-
 ws-auth: false
 nonstream-keepalive-interval: 0
-
 claude-api-key:
   - api-key: sk-CSixhNHcYqntT0yhH
     base-url: http://localhost:8317/v1
@@ -79,3 +64,21 @@ claude-api-key:
         alias: claude-sonnet-4-6[1m]
     cloak:
       mode: auto
+ampcode:
+  force-model-mappings: true
+  upstream-api-key: sgamp_user_01KMAKZBQ7WT51EKK06N3GSX79_8223007703f0693dc9f7f9af0230ef031b947e0ff447c9fced7d21ad2e2de491
+  model-mappings:
+    - from: claude-opus-4-6
+      to: gpt-5.4
+
+# Optional payload configuration for Codex
+payload:
+  override:
+    - models:
+        - name: "gpt-5.2"
+        - name: "gpt-5.4"
+      protocol: "codex"
+      params:
+        "reasoning.effort": "xhigh"
+        "service_tier": "priority"
+
